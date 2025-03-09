@@ -53,11 +53,8 @@ enum Error {
     #[error("Coudln't install the extension: {:?}", .0)]
     CommandError(#[source] std::io::Error),
 
-    #[error("Problem reading the file: {:?}", .0)]
-    FileReadError(#[source] std::io::Error),
-
-    #[error("Problem deleting the file: {:?}", .0)]
-    FileDeleteError(#[source] std::io::Error),
+    #[error("Problem moving the file: {:?}", .0)]
+    FileMoveError(#[source] std::io::Error),
 
     #[error("The index you select is invalid")]
     IndexOutOfBoundError(),
@@ -428,14 +425,9 @@ fn install_extension(path: String, program: String) -> Result<(), Error> {
     Ok(())
 }
 
-fn save_to_file(tmp_path: String, path: String) -> Result<(), Error> {
-    let tmp_file = fs::read(&tmp_path).map_err(Error::FileReadError)?;
-
-    fs::write(&path, tmp_file).map_err(Error::FileWriteError)?;
-
+fn move_to(tmp_path: String, path: String) -> Result<(), Error> {
+    fs::rename(&tmp_path, &path).map_err(Error::FileMoveError)?;
     println!("Wrote to {}", &path);
-
-    fs::remove_file(&tmp_path).map_err(Error::FileDeleteError)?;
 
     Ok(())
 }
