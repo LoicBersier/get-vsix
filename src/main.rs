@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::Write;
 use std::num::ParseIntError;
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitCode, Stdio};
 use std::str::FromStr;
 use std::{env, fs, io};
 
@@ -41,31 +41,37 @@ struct Args {
 
 #[derive(Error, Debug)]
 enum Error {
-    #[error("Error while performing a tcp connect: {:?}", .0)]
+    #[error("Couldn't resolve the site: {}", .0)]
     ReqwestError(#[source] reqwest::Error),
+
+    #[error("Error while trying to get the content length")]
+    ReqwestLengthError(),
 
     #[error("The json recieved doesn't match what is expected: {:?}", .0)]
     JsonError(#[source] reqwest::Error),
 
-    #[error("Problem writing to the file: {:?}", .0)]
+    #[error("Error while writing a file: {}", .0)]
     FileWriteError(#[source] std::io::Error),
 
-    #[error("Couldn't find the extension: {:?}", .0)]
+    #[error("Error while reading a file: {}", .0)]
+    FileReadError(#[source] std::io::Error),
+
+    #[error("Error while deleting a file: {}", .0)]
+    FileDeleteError(#[source] std::io::Error),
+
+    #[error("Couldn't find the extension: {}", .0)]
     SearchError(String),
 
-    #[error("Couldn't install the extension: {:?}", .0)]
+    #[error("Couldn't find the program used to install the extension.")]
     CommandError(#[source] std::io::Error),
 
-    #[error("Problem moving the file: {:?}", .0)]
-    FileMoveError(#[source] std::io::Error),
-
-    #[error("The index you select is invalid")]
+    #[error("The index you selected is invalid.")]
     IndexOutOfBoundError(),
 
-    #[error("Couldn't parse a string to an integer")]
+    #[error("Couldn't parse a string to an integer.")]
     ParseIntError(ParseIntError),
 
-    #[error("Couldn't parse a url")]
+    #[error("Couldn't parse a url.")]
     UrlParseError(),
 
     #[error("Error while trying to flush the buffer: {:?}", .0)]
@@ -261,8 +267,18 @@ impl FromStr for TargetPlatform {
     }
 }
 
+
 #[tokio::main]
-async fn main() -> Result<(), Error> {
+async fn main() -> ExitCode{
+    if let Err(error) = get_vsix().await {
+        eprintln!("{}", error);
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+async fn get_vsix() -> Result<(), Error> {
     let args = Args::parse();
 
     let resp = reqwest::Client::new()
@@ -405,7 +421,7 @@ async fn main() -> Result<(), Error> {
 
                 let total_size: u64 = resp
                     .content_length()
-                    .ok_or(Error::SearchError("AA".to_string()))?;
+                    .ok_or(Error::ReqwestLengthError())?;
 
                 let total_size_format = if total_size / 1000 / 1000 > 0 {
                     format!("{} mb", total_size / 1000 / 1000)
@@ -418,7 +434,7 @@ async fn main() -> Result<(), Error> {
                 println!("Downloading {}", total_size_format);
 
                 let filename = format!("{}.{}-{}.vsix", publisher_name, extension_name, version);
-                let tmp_path = format!("{}{}", env::temp_dir().display(), &filename);
+                let tmp_path = format!("{}/{}", env::temp_dir().display(), &filename);
 
                 let mut file = File::create(&tmp_path).map_err(Error::FileWriteError)?;
                 let mut stream = resp.bytes_stream();
@@ -441,7 +457,7 @@ async fn main() -> Result<(), Error> {
                 match choice.as_str() {
                     "y" => install_extension(tmp_path, args.program),
                     _ => {
-                        let path = format!("{}{}", &args.output, &filename);
+                        let path = format!("{}/{}", &args.output, &filename);
                         move_to(tmp_path, path)
                     }
                 }?;
@@ -467,7 +483,16 @@ fn install_extension(path: String, program: String) -> Result<(), Error> {
 }
 
 fn move_to(tmp_path: String, path: String) -> Result<(), Error> {
-    fs::rename(&tmp_path, &path).map_err(Error::FileMoveError)?;
+    match fs::rename(&tmp_path, &path) {
+        Ok(_) => todo!(),
+        Err(_) => {
+            // If an error occured during the rename its probably because the tmp dir isn't on the same disk as the output
+            let tmp_file = fs::read(&tmp_path).map_err(Error::FileReadError)?;
+            fs::write(&path, tmp_file).map_err(Error::FileWriteError)?;        
+            fs::remove_file(&tmp_path).map_err(Error::FileDeleteError)?;
+        },
+    }
+
     println!("Wrote to {}", &path);
 
     Ok(())
