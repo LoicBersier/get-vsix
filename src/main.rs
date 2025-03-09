@@ -1,9 +1,12 @@
+use std::fs::File;
 use std::io::Write;
+use std::num::ParseIntError;
 use std::process::{Command, Stdio};
 use std::str::FromStr;
 use std::{env, fs, io};
 
 use clap::Parser;
+use futures::StreamExt;
 use reqwest::Url;
 use reqwest::{self, header::CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
@@ -47,10 +50,10 @@ enum Error {
     #[error("Problem writing to the file: {:?}", .0)]
     FileWriteError(#[source] std::io::Error),
 
-    #[error("Coudln't find the extension: {:?}", .0)]
+    #[error("Couldn't find the extension: {:?}", .0)]
     SearchError(String),
 
-    #[error("Coudln't install the extension: {:?}", .0)]
+    #[error("Couldn't install the extension: {:?}", .0)]
     CommandError(#[source] std::io::Error),
 
     #[error("Problem moving the file: {:?}", .0)]
@@ -58,6 +61,15 @@ enum Error {
 
     #[error("The index you select is invalid")]
     IndexOutOfBoundError(),
+
+    #[error("Couldn't parse a string to an integer")]
+    ParseIntError(ParseIntError),
+
+    #[error("Couldn't parse a url")]
+    UrlParseError(),
+
+    #[error("Error while trying to flush the buffer: {:?}", .0)]
+    FlushError(#[source] std::io::Error),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -249,10 +261,11 @@ impl FromStr for TargetPlatform {
     }
 }
 
-fn main() -> Result<(), Error> {
+#[tokio::main]
+async fn main() -> Result<(), Error> {
     let args = Args::parse();
 
-    let resp = reqwest::blocking::Client::new()
+    let resp = reqwest::Client::new()
         .post(format!("{}?api-version={}", &args.api, &args.api_version))
         .header(CONTENT_TYPE, "application/json")
         .json(&RequestOptions {
@@ -276,9 +289,13 @@ fn main() -> Result<(), Error> {
             }],
         })
         .send()
+        .await
         .map_err(Error::ReqwestError)?;
 
-    let answer = resp.json::<ExpectedAnswer>().map_err(Error::JsonError)?;
+    let answer = resp
+        .json::<ExpectedAnswer>()
+        .await
+        .map_err(Error::JsonError)?;
 
     if answer.results[0].extensions.len() == 0 {
         return Err(Error::SearchError(args.search.clone()));
@@ -293,7 +310,7 @@ fn main() -> Result<(), Error> {
                 let version = &extension.versions[0].version;
 
                 println!(
-                    "[{}] : {} by {} version, {}",
+                    "[{}] : {} by {} v{}",
                     i + 1,
                     extension_name,
                     publisher_name,
@@ -304,15 +321,13 @@ fn main() -> Result<(), Error> {
             println!();
 
             let choice: usize =
-                input("Input the index of the extension you want to download: ".to_owned())
+                input("Input the index of the extension you want to download: ".to_owned())?
                     .trim()
                     .parse()
-                    .unwrap();
+                    .map_err(Error::ParseIntError)?;
 
             println!();
 
-            // &answer.results[0].extensions[choice - 1]
-            // &answer.results[0].extensions.get(choice - 1).unwrap()
             match &answer.results[0].extensions.get(choice - 1) {
                 Some(i) => i,
                 None => return Err(Error::IndexOutOfBoundError()),
@@ -366,7 +381,7 @@ fn main() -> Result<(), Error> {
         println!("\tRelease date: {}", &extension.releaseDate);
         println!();
 
-        let confirm = input("Do you want to continue? [Y/n] ".to_owned())
+        let confirm = input("Do you want to continue? [Y/n]: ".to_owned())?
             .trim()
             .to_lowercase();
 
@@ -376,24 +391,50 @@ fn main() -> Result<(), Error> {
                     .files
                     .iter()
                     .position(|r| r.assetType == "Microsoft.VisualStudio.Services.VSIXPackage")
-                    .unwrap();
+                    .ok_or(Error::IndexOutOfBoundError())?;
 
                 let download_url =
-                    Url::parse(&extension.versions[*index].files[*download_index].source).unwrap();
+                    match Url::parse(&extension.versions[*index].files[*download_index].source) {
+                        Ok(parsed) => Ok(parsed),
+                        Err(_) => Err(Error::UrlParseError()),
+                    }?;
 
-                let resp = reqwest::blocking::get(download_url).map_err(Error::ReqwestError)?;
+                let resp = reqwest::get(download_url)
+                    .await
+                    .map_err(Error::ReqwestError)?;
 
-                let data = resp.bytes().map_err(Error::ReqwestError)?;
+                let total_size: u64 = resp
+                    .content_length()
+                    .ok_or(Error::SearchError("AA".to_string()))?;
 
-                println!("Download successful.");
+                let total_size_format = if total_size / 1000 / 1000 > 0 {
+                    format!("{} mb", total_size / 1000 / 1000)
+                } else if total_size / 1000 > 0 {
+                    format!("{} kb", total_size / 1000)
+                } else {
+                    format!("{} b", total_size)
+                };
+
+                println!("Downloading {}", total_size_format);
 
                 let filename = format!("{}.{}-{}.vsix", publisher_name, extension_name, version);
                 let tmp_path = format!("{}{}", env::temp_dir().display(), &filename);
-                fs::write(&tmp_path, data.as_ref()).map_err(Error::FileWriteError)?;
+
+                let mut file = File::create(&tmp_path).map_err(Error::FileWriteError)?;
+                let mut stream = resp.bytes_stream();
+
+                while let Some(byte) = stream.next().await {
+                    let chunk = byte.map_err(Error::ReqwestError)?;
+                    print!(".");
+                    std::io::stdout().flush().map_err(Error::FlushError)?;
+                    file.write_all(&chunk).map_err(Error::FileWriteError)?;
+                }
+
+                println!("Download successful.");
 
                 let choice = input(
                     "Do you want me to install the extension you downloaded? [Y/n]: ".to_owned(),
-                )
+                )?
                 .trim()
                 .to_lowercase();
 
@@ -401,7 +442,7 @@ fn main() -> Result<(), Error> {
                     "y" => install_extension(tmp_path, args.program),
                     _ => {
                         let path = format!("{}{}", &args.output, &filename);
-                        save_to_file(tmp_path, path)
+                        move_to(tmp_path, path)
                     }
                 }?;
             }
@@ -432,14 +473,14 @@ fn move_to(tmp_path: String, path: String) -> Result<(), Error> {
     Ok(())
 }
 
-fn input(prompt: String) -> String {
+fn input(prompt: String) -> Result<String, Error> {
     print!("{}", prompt);
-    std::io::stdout().flush().unwrap();
+    std::io::stdout().flush().map_err(Error::FlushError)?;
 
     let mut choice = String::new();
     io::stdin()
         .read_line(&mut choice)
         .expect("Failed to read line");
 
-    choice
+    Ok(choice)
 }
