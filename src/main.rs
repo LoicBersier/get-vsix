@@ -267,9 +267,8 @@ impl FromStr for TargetPlatform {
     }
 }
 
-
 #[tokio::main]
-async fn main() -> ExitCode{
+async fn main() -> ExitCode {
     if let Err(error) = get_vsix().await {
         eprintln!("{}", error);
         ExitCode::FAILURE
@@ -419,9 +418,7 @@ async fn get_vsix() -> Result<(), Error> {
                     .await
                     .map_err(Error::ReqwestError)?;
 
-                let total_size: u64 = resp
-                    .content_length()
-                    .ok_or(Error::ReqwestLengthError())?;
+                let total_size: u64 = resp.content_length().ok_or(Error::ReqwestLengthError())?;
 
                 let total_size_format = if total_size / 1000 / 1000 > 0 {
                     format!("{} mb", total_size / 1000 / 1000)
@@ -484,16 +481,15 @@ fn install_extension(path: String, program: String) -> Result<(), Error> {
 
 fn move_to(tmp_path: String, path: String) -> Result<(), Error> {
     match fs::rename(&tmp_path, &path) {
-        Ok(_) => todo!(),
+        Ok(_) => println!("Moved file to {}", &path),
         Err(_) => {
             // If an error occured during the rename its probably because the tmp dir isn't on the same disk as the output
             let tmp_file = fs::read(&tmp_path).map_err(Error::FileReadError)?;
-            fs::write(&path, tmp_file).map_err(Error::FileWriteError)?;        
+            fs::write(&path, tmp_file).map_err(Error::FileWriteError)?;
             fs::remove_file(&tmp_path).map_err(Error::FileDeleteError)?;
-        },
+            println!("Copied file to {}", &path);
+        }
     }
-
-    println!("Wrote to {}", &path);
 
     Ok(())
 }
