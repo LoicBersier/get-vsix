@@ -432,7 +432,7 @@ async fn get_vsix() -> Result<(), Error> {
                     format!("{} b", total_size)
                 };
 
-                println!("Downloading {}", total_size_format);
+                println!("Downloading {}...", total_size_format);
 
                 let filename = format!("{}.{}-{}.vsix", publisher_name, extension_name, version);
                 let tmp_path = format!("{}/{}", env::temp_dir().display(), &filename);
@@ -456,11 +456,17 @@ async fn get_vsix() -> Result<(), Error> {
                     let percentage: f64 = (progress as f64 / total_size as f64) * 100.0;
 
                     print!(
-                        "\r{} {}% [{}{}]",
-                        progress_format,
+                        "\r{}% [{}{}] {}",
                         percentage as usize,
-                        "=".repeat(percentage as usize),
-                        " ".repeat(100 - percentage as usize)
+                        {
+                            let mut bar = "=".repeat(percentage as usize / 3);
+                            if percentage < 100.0 {
+                                bar += ">"
+                            }
+                            bar
+                        },
+                        " ".repeat(100 / 3 - percentage as usize / 3),
+                        progress_format,
                     );
                     std::io::stdout().flush().map_err(Error::Flush)?;
                     file.write_all(&chunk).map_err(Error::FileWrite)?;
