@@ -3,7 +3,7 @@ use std::io::Write;
 use std::num::ParseIntError;
 use std::process::{Command, ExitCode, Stdio};
 use std::str::FromStr;
-use std::{env, fs, io};
+use std::{env, fs, io, usize};
 
 use clap::Parser;
 use futures::StreamExt;
@@ -418,7 +418,7 @@ async fn get_vsix() -> Result<(), Error> {
                     .await
                     .map_err(Error::ReqwestError)?;
 
-                let total_size: u64 = resp.content_length().ok_or(Error::ReqwestLengthError())?;
+                let total_size = resp.content_length().ok_or(Error::ReqwestLengthError())?;
 
                 let total_size_format = if total_size / 1000 / 1000 > 0 {
                     format!("{} mb", total_size / 1000 / 1000)
@@ -436,14 +436,33 @@ async fn get_vsix() -> Result<(), Error> {
                 let mut file = File::create(&tmp_path).map_err(Error::FileWriteError)?;
                 let mut stream = resp.bytes_stream();
 
+                let mut progress = 0;
                 while let Some(byte) = stream.next().await {
                     let chunk = byte.map_err(Error::ReqwestError)?;
-                    print!(".");
+                    progress = progress + chunk.len();
+
+                    let progress_format = if progress / 1000 / 1000 > 0 {
+                        format!("{} mb", progress / 1000 / 1000)
+                    } else if progress / 1000 > 0 {
+                        format!("{} kb", progress / 1000)
+                    } else {
+                        format!("{} b", progress)
+                    };
+
+                    let percentage: f64 = (progress as f64 / total_size as f64) * 100.0;
+
+                    print!(
+                        "\r{} {}% [{}{}]",
+                        progress_format,
+                        percentage as usize,
+                        "=".repeat(percentage as usize),
+                        " ".repeat(100 - percentage as usize)
+                    );
                     std::io::stdout().flush().map_err(Error::FlushError)?;
                     file.write_all(&chunk).map_err(Error::FileWriteError)?;
                 }
 
-                println!("Download successful.");
+                println!("\nDownload successful.");
 
                 let choice = input(
                     "Do you want me to install the extension you downloaded? [Y/n]: ".to_owned(),
