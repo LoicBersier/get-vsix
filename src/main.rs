@@ -3,7 +3,7 @@ use std::io::Write;
 use std::num::ParseIntError;
 use std::process::{Command, ExitCode, Stdio};
 use std::str::FromStr;
-use std::{env, fs, io, usize};
+use std::{env, fs, io};
 
 use clap::Parser;
 use futures::StreamExt;
@@ -42,40 +42,40 @@ struct Args {
 #[derive(Error, Debug)]
 enum Error {
     #[error("Couldn't resolve the site: {}", .0)]
-    ReqwestError(#[source] reqwest::Error),
+    ReqwestDns(#[source] reqwest::Error),
 
     #[error("Error while trying to get the content length")]
-    ReqwestLengthError(),
+    ReqwestLength(),
 
     #[error("The json recieved doesn't match what is expected: {:?}", .0)]
-    JsonError(#[source] reqwest::Error),
+    JsonParse(#[source] reqwest::Error),
 
     #[error("Error while writing a file: {}", .0)]
-    FileWriteError(#[source] std::io::Error),
+    FileWrite(#[source] std::io::Error),
 
     #[error("Error while reading a file: {}", .0)]
-    FileReadError(#[source] std::io::Error),
+    FileRead(#[source] std::io::Error),
 
     #[error("Error while deleting a file: {}", .0)]
-    FileDeleteError(#[source] std::io::Error),
+    FileDelete(#[source] std::io::Error),
 
     #[error("Couldn't find the extension: {}", .0)]
-    SearchError(String),
+    Search(String),
 
     #[error("Couldn't find the program used to install the extension.")]
-    CommandError(#[source] std::io::Error),
+    Command(#[source] std::io::Error),
 
     #[error("The index you selected is invalid.")]
-    IndexOutOfBoundError(),
+    IndexOutOfBound(),
 
     #[error("Couldn't parse a string to an integer.")]
-    ParseIntError(ParseIntError),
+    ParseInt(ParseIntError),
 
     #[error("Couldn't parse a url.")]
-    UrlParseError(),
+    UrlParse(),
 
     #[error("Error while trying to flush the buffer: {:?}", .0)]
-    FlushError(#[source] std::io::Error),
+    Flush(#[source] std::io::Error),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -239,14 +239,18 @@ enum TargetPlatform {
 
     #[serde(rename = "darwin-x64")]
     DarwinX64,
-    #[serde(alias = "darwin-arm64")]
+    #[serde(rename = "darwin-arm64")]
     DarwinArm64,
 
-    WEB,
+    #[serde(rename = "WEB")]
+    Web,
 
-    UNIVERSAL,
-    UNKNOWN,
-    UNDEFINED,
+    #[serde(rename = "UNIVERSAL")]
+    Universal,
+    #[serde(rename = "UNKNOWN")]
+    Unknown,
+    #[serde(rename = "UNDEFINED")]
+    Undefined,
 }
 
 impl FromStr for TargetPlatform {
@@ -298,22 +302,22 @@ async fn get_vsix() -> Result<(), Error> {
                     },
                     RequestCriteria {
                         filterType: FilterType::ExcludeWithFlags as i8,
-                        value: (RequestFlags::Unpublished as i8).to_string(),
+                        value: (RequestFlags::Unpublished as i16).to_string(),
                     },
                 ],
             }],
         })
         .send()
         .await
-        .map_err(Error::ReqwestError)?;
+        .map_err(Error::ReqwestDns)?;
 
     let answer = resp
         .json::<ExpectedAnswer>()
         .await
-        .map_err(Error::JsonError)?;
+        .map_err(Error::JsonParse)?;
 
-    if answer.results[0].extensions.len() == 0 {
-        return Err(Error::SearchError(args.search.clone()));
+    if answer.results[0].extensions.is_empty() {
+        return Err(Error::Search(args.search.clone()));
     } else {
         let extension = if answer.results[0].extensions.len() > 1 {
             println!("Found {} extensions", &answer.results[0].extensions.len());
@@ -339,13 +343,13 @@ async fn get_vsix() -> Result<(), Error> {
                 input("Input the index of the extension you want to download: ".to_owned())?
                     .trim()
                     .parse()
-                    .map_err(Error::ParseIntError)?;
+                    .map_err(Error::ParseInt)?;
 
             println!();
 
             match &answer.results[0].extensions.get(choice - 1) {
                 Some(i) => i,
-                None => return Err(Error::IndexOutOfBoundError()),
+                None => return Err(Error::IndexOutOfBound()),
             }
         } else {
             println!("Found 1 extension");
@@ -406,19 +410,19 @@ async fn get_vsix() -> Result<(), Error> {
                     .files
                     .iter()
                     .position(|r| r.assetType == "Microsoft.VisualStudio.Services.VSIXPackage")
-                    .ok_or(Error::IndexOutOfBoundError())?;
+                    .ok_or(Error::IndexOutOfBound())?;
 
                 let download_url =
                     match Url::parse(&extension.versions[*index].files[*download_index].source) {
                         Ok(parsed) => Ok(parsed),
-                        Err(_) => Err(Error::UrlParseError()),
+                        Err(_) => Err(Error::UrlParse()),
                     }?;
 
                 let resp = reqwest::get(download_url)
                     .await
-                    .map_err(Error::ReqwestError)?;
+                    .map_err(Error::ReqwestDns)?;
 
-                let total_size = resp.content_length().ok_or(Error::ReqwestLengthError())?;
+                let total_size = resp.content_length().ok_or(Error::ReqwestLength())?;
 
                 let total_size_format = if total_size / 1000 / 1000 > 0 {
                     format!("{} mb", total_size / 1000 / 1000)
@@ -433,13 +437,13 @@ async fn get_vsix() -> Result<(), Error> {
                 let filename = format!("{}.{}-{}.vsix", publisher_name, extension_name, version);
                 let tmp_path = format!("{}/{}", env::temp_dir().display(), &filename);
 
-                let mut file = File::create(&tmp_path).map_err(Error::FileWriteError)?;
+                let mut file = File::create(&tmp_path).map_err(Error::FileWrite)?;
                 let mut stream = resp.bytes_stream();
 
                 let mut progress = 0;
                 while let Some(byte) = stream.next().await {
-                    let chunk = byte.map_err(Error::ReqwestError)?;
-                    progress = progress + chunk.len();
+                    let chunk = byte.map_err(Error::ReqwestDns)?;
+                    progress += chunk.len();
 
                     let progress_format = if progress / 1000 / 1000 > 0 {
                         format!("{} mb", progress / 1000 / 1000)
@@ -458,8 +462,8 @@ async fn get_vsix() -> Result<(), Error> {
                         "=".repeat(percentage as usize),
                         " ".repeat(100 - percentage as usize)
                     );
-                    std::io::stdout().flush().map_err(Error::FlushError)?;
-                    file.write_all(&chunk).map_err(Error::FileWriteError)?;
+                    std::io::stdout().flush().map_err(Error::Flush)?;
+                    file.write_all(&chunk).map_err(Error::FileWrite)?;
                 }
 
                 println!("\nDownload successful.");
@@ -493,7 +497,7 @@ fn install_extension(path: String, program: String) -> Result<(), Error> {
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .output()
-        .map_err(Error::CommandError)?;
+        .map_err(Error::Command)?;
 
     Ok(())
 }
@@ -503,9 +507,9 @@ fn move_to(tmp_path: String, path: String) -> Result<(), Error> {
         Ok(_) => println!("Moved file to {}", &path),
         Err(_) => {
             // If an error occured during the rename its probably because the tmp dir isn't on the same disk as the output
-            let tmp_file = fs::read(&tmp_path).map_err(Error::FileReadError)?;
-            fs::write(&path, tmp_file).map_err(Error::FileWriteError)?;
-            fs::remove_file(&tmp_path).map_err(Error::FileDeleteError)?;
+            let tmp_file = fs::read(&tmp_path).map_err(Error::FileRead)?;
+            fs::write(&path, tmp_file).map_err(Error::FileWrite)?;
+            fs::remove_file(&tmp_path).map_err(Error::FileDelete)?;
             println!("Copied file to {}", &path);
         }
     }
@@ -515,7 +519,7 @@ fn move_to(tmp_path: String, path: String) -> Result<(), Error> {
 
 fn input(prompt: String) -> Result<String, Error> {
     print!("{}", prompt);
-    std::io::stdout().flush().map_err(Error::FlushError)?;
+    std::io::stdout().flush().map_err(Error::Flush)?;
 
     let mut choice = String::new();
     io::stdin()
