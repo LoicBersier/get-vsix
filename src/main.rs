@@ -456,7 +456,7 @@ async fn get_vsix() -> Result<(), Error> {
                     let percentage: f64 = (progress as f64 / total_size as f64) * 100.0;
 
                     print!(
-                        "\r{}% [{}{}] {}",
+                        "\x1B[2K\r{}% [{}{}] {}",
                         percentage as usize,
                         {
                             let mut bar = "=".repeat(percentage as usize / 3);
