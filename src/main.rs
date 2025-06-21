@@ -1,16 +1,20 @@
+use std::env;
 use std::fs::File;
 use std::io::Write;
-use std::num::ParseIntError;
-use std::process::{Command, ExitCode, Stdio};
-use std::str::FromStr;
-use std::{env, fs, io};
+use std::process::ExitCode;
 
 use clap::Parser;
 use futures::StreamExt;
 use reqwest::Url;
 use reqwest::{self, header::CONTENT_TYPE};
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
+
+mod utility;
+use utility::RequestOptions;
+
+use crate::utility::{
+    format_size, get_target_platform, input, install_extension, move_to, Error, ExpectedAnswer,
+    FilterType, RequestCriteria, RequestFilters, RequestFlags,
+};
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -37,238 +41,6 @@ struct Args {
     /// Where the file is saved
     #[arg(short, long, default_value = "./")]
     output: String,
-}
-
-#[derive(Error, Debug)]
-enum Error {
-    #[error("Couldn't resolve the site: {}", .0)]
-    ReqwestDns(#[source] reqwest::Error),
-
-    #[error("Error while trying to get the content length")]
-    ReqwestLength(),
-
-    #[error("The json recieved doesn't match what is expected: {:?}", .0)]
-    JsonParse(#[source] reqwest::Error),
-
-    #[error("Error while writing a file: {}", .0)]
-    FileWrite(#[source] std::io::Error),
-
-    #[error("Error while reading a file: {}", .0)]
-    FileRead(#[source] std::io::Error),
-
-    #[error("Error while deleting a file: {}", .0)]
-    FileDelete(#[source] std::io::Error),
-
-    #[error("Couldn't find the extension: {}", .0)]
-    Search(String),
-
-    #[error("Couldn't find the program used to install the extension.")]
-    Command(#[source] std::io::Error),
-
-    #[error("The index you selected is invalid.")]
-    IndexOutOfBound(),
-
-    #[error("Couldn't parse a string to an integer.")]
-    ParseInt(ParseIntError),
-
-    #[error("Couldn't parse a url.")]
-    UrlParse(),
-
-    #[error("Error while trying to flush the buffer: {:?}", .0)]
-    Flush(#[source] std::io::Error),
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[allow(non_snake_case)]
-struct Publisher {
-    publisherId: String,
-    publisherName: String,
-    displayName: String,
-    flags: String,
-    domain: Option<String>,
-    isDomainVerified: bool,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[allow(non_snake_case)]
-struct Files {
-    assetType: String,
-    source: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[allow(non_snake_case)]
-struct Properties {
-    key: String,
-    value: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[allow(non_snake_case)]
-struct Versions {
-    version: String,
-    targetPlatform: Option<TargetPlatform>,
-    flags: String,
-    lastUpdated: String,
-    files: Vec<Files>,
-    properties: Vec<Properties>,
-    assetUri: String,
-    fallbackAssetUri: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[allow(non_snake_case)]
-struct ExpectedAnswer {
-    results: Vec<Results>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[allow(non_snake_case)]
-struct Results {
-    extensions: Vec<Extension>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[allow(non_snake_case)]
-struct Extension {
-    publisher: Publisher,
-    extensionId: String,
-    extensionName: String,
-    displayName: String,
-    flags: String,
-    lastUpdated: String,
-    publishedDate: String,
-    releaseDate: String,
-    shortDescription: Option<String>,
-    versions: Vec<Versions>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[allow(non_snake_case)]
-struct RequestOptions {
-    filters: Vec<RequestFilters>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[allow(non_snake_case)]
-struct RequestFilters {
-    criteria: Vec<RequestCriteria>,
-    pageNumber: i8,
-    pageSize: i16,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[allow(non_snake_case)]
-struct RequestCriteria {
-    filterType: i8,
-    value: String,
-}
-
-// https://learn.microsoft.com/en-us/javascript/api/azure-devops-extension-api/extensionqueryfiltertype
-#[derive(Serialize, Deserialize, Debug)]
-enum FilterType {
-    Tag = 1,
-    DisplayName = 2,
-    Private = 3,
-    ExtensionId = 4,
-    Category = 5,
-    ContributionType = 6,
-    Name = 7,
-    Target = 8,
-    Featured = 9,
-    SearchText = 10,
-    FeaturedInCategory = 11,
-    ExcludeWithFlags = 12,
-    IncludeWithFlags = 13,
-    Lcid = 14,
-    InstallationTargetVersion = 15,
-    InstallationTargetVersionRange = 16,
-    VsixMetadata = 17,
-    PublisherName = 18,
-    PublisherDisplayName = 19,
-    IncludeWithPublisherFlags = 20,
-    OrganizationSharedWith = 21,
-    ProductArchitecture = 22,
-    TargetPlatform = 23,
-    ExtensionName = 24,
-}
-
-// https://github.com/microsoft/vscode/blob/main/src/vs/platform/extensionManagement/common/extensionGalleryService.ts#L103
-#[derive(Serialize, Deserialize, Debug)]
-enum RequestFlags {
-    None = 0x0,
-    IncludeVersions = 0x1,
-    IncludeFiles = 0x2,
-    IncludeCategoryAndTags = 0x4,
-    IncludeSharedAccounts = 0x8,
-    IncludeVersionProperties = 0x10,
-    ExcludeNonValidated = 0x20,
-    IncludeInstallationTargets = 0x40,
-    IncludeAssetUri = 0x80,
-    IncludeStatistics = 0x100,
-    IncludeLatestVersionOnly = 0x200,
-    Unpublished = 0x1000,
-    IncludeNameConflictInfo = 0x8000,
-}
-
-// https://github.com/microsoft/vscode/blob/main/src/vs/platform/extensions/common/extensions.ts#L306
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
-enum TargetPlatform {
-    #[serde(rename = "win32-ia32")]
-    Win32ia32,
-    #[serde(rename = "win32-x64")]
-    Win32X64,
-    #[serde(rename = "win32-arm64")]
-    Win32Arm64,
-
-    #[serde(rename = "linux-ia32")]
-    Linuxia32,
-    #[serde(rename = "linux-x64")]
-    LinuxX64,
-    #[serde(rename = "linux-arm64")]
-    LinuxArm64,
-    #[serde(rename = "linux-armhf")]
-    LinuxArmhf,
-
-    #[serde(rename = "alpine-ia32")]
-    Alpineia32,
-    #[serde(rename = "alpine-x64")]
-    AlpineX64,
-    #[serde(rename = "alpine-arm64")]
-    AlpineArm64,
-
-    #[serde(rename = "darwin-x64")]
-    DarwinX64,
-    #[serde(rename = "darwin-arm64")]
-    DarwinArm64,
-
-    #[serde(rename = "WEB")]
-    Web,
-
-    #[serde(rename = "UNIVERSAL")]
-    Universal,
-    #[serde(rename = "UNKNOWN")]
-    Unknown,
-    #[serde(rename = "UNDEFINED")]
-    Undefined,
-}
-
-impl FromStr for TargetPlatform {
-    type Err = ();
-    fn from_str(input: &str) -> Result<TargetPlatform, Self::Err> {
-        match input {
-            "win32-x64" => Ok(TargetPlatform::Win32X64),
-            "win32-arm64" => Ok(TargetPlatform::Win32Arm64),
-
-            "linux-x64" => Ok(TargetPlatform::LinuxX64),
-            "linux-armhf" => Ok(TargetPlatform::LinuxArmhf),
-            "linux-arm64" => Ok(TargetPlatform::LinuxArm64),
-
-            "darwin-x64" => Ok(TargetPlatform::DarwinX64),
-            "darwin-arm64" => Ok(TargetPlatform::DarwinArm64),
-            _ => Err(()),
-        }
-    }
 }
 
 #[tokio::main]
@@ -359,22 +131,12 @@ async fn get_vsix() -> Result<(), Error> {
         let publisher_name = &extension.publisher.publisherName;
         let extension_name = &extension.extensionName;
 
-        let arch = match env::consts::ARCH {
-            "x86" => "ia32",
-            "x86_64" => "x64",
-            "arm" => "armhf",
-            "aarch64" => "arm64",
-            _ => "x64",
+        let description = match &extension.shortDescription {
+            Some(desc) => desc,
+            _ => "",
         };
 
-        let os = match env::consts::OS {
-            "windows" => "win32",
-            "linux" => "linux",
-            "macos" => "darwin",
-            _ => "linux",
-        };
-
-        let target_platform = TargetPlatform::from_str(&format!("{}-{}", os, arch)).unwrap();
+        let target_platform = get_target_platform();
 
         let index = &extension
             .versions
@@ -392,6 +154,8 @@ async fn get_vsix() -> Result<(), Error> {
         let version = &extension.versions[*index].version;
 
         println!("{}:", extension_name);
+        println!("{}", description);
+        println!();
         println!("\tPublisher: {}", publisher_name);
         println!("\tVersion: {}", version);
         println!("\tFlags: {}", &extension.flags);
@@ -424,13 +188,7 @@ async fn get_vsix() -> Result<(), Error> {
 
                 let total_size = resp.content_length().ok_or(Error::ReqwestLength())?;
 
-                let total_size_format = if total_size / 1000 / 1000 > 0 {
-                    format!("{} mb", total_size / 1000 / 1000)
-                } else if total_size / 1000 > 0 {
-                    format!("{} kb", total_size / 1000)
-                } else {
-                    format!("{} b", total_size)
-                };
+                let total_size_format = format_size(total_size as usize);
 
                 println!("Downloading {}...", total_size_format);
 
@@ -445,13 +203,7 @@ async fn get_vsix() -> Result<(), Error> {
                     let chunk = byte.map_err(Error::ReqwestDns)?;
                     progress += chunk.len();
 
-                    let progress_format = if progress / 1000 / 1000 > 0 {
-                        format!("{} mb", progress / 1000 / 1000)
-                    } else if progress / 1000 > 0 {
-                        format!("{} kb", progress / 1000)
-                    } else {
-                        format!("{} b", progress)
-                    };
+                    let progress_format = format_size(progress);
 
                     let percentage: f64 = (progress as f64 / total_size as f64) * 100.0;
 
@@ -493,44 +245,4 @@ async fn get_vsix() -> Result<(), Error> {
     }
 
     Ok(())
-}
-
-fn install_extension(path: String, program: String) -> Result<(), Error> {
-    Command::new(program)
-        .arg("--install-extension")
-        .arg(&path)
-        .arg("--force")
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .output()
-        .map_err(Error::Command)?;
-
-    Ok(())
-}
-
-fn move_to(tmp_path: String, path: String) -> Result<(), Error> {
-    match fs::rename(&tmp_path, &path) {
-        Ok(_) => println!("Moved file to {}", &path),
-        Err(_) => {
-            // If an error occured during the rename its probably because the tmp dir isn't on the same disk as the output
-            let tmp_file = fs::read(&tmp_path).map_err(Error::FileRead)?;
-            fs::write(&path, tmp_file).map_err(Error::FileWrite)?;
-            fs::remove_file(&tmp_path).map_err(Error::FileDelete)?;
-            println!("Copied file to {}", &path);
-        }
-    }
-
-    Ok(())
-}
-
-fn input(prompt: String) -> Result<String, Error> {
-    print!("{}", prompt);
-    std::io::stdout().flush().map_err(Error::Flush)?;
-
-    let mut choice = String::new();
-    io::stdin()
-        .read_line(&mut choice)
-        .expect("Failed to read line");
-
-    Ok(choice)
 }
