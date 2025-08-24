@@ -2,6 +2,7 @@ use std::env;
 use std::fs::File;
 use std::io::Write;
 use std::process::ExitCode;
+use std::time::Instant;
 
 use clap::Parser;
 use futures::StreamExt;
@@ -12,8 +13,8 @@ mod utility;
 use utility::RequestOptions;
 
 use crate::utility::{
-    format_size, get_target_platform, input, install_extension, move_to, Error, ExpectedAnswer,
-    FilterType, RequestCriteria, RequestFilters, RequestFlags,
+    format_size, get_target_platform, input, install_extension, move_to, Ansi, Error,
+    ExpectedAnswer, FilterType, RequestCriteria, RequestFilters, RequestFlags,
 };
 
 #[derive(Parser, Debug)]
@@ -199,6 +200,7 @@ async fn get_vsix() -> Result<(), Error> {
                 let mut stream = resp.bytes_stream();
 
                 let mut progress = 0;
+                let start = Instant::now();
                 while let Some(byte) = stream.next().await {
                     let chunk = byte.map_err(Error::ReqwestDns)?;
                     progress += chunk.len();
@@ -207,8 +209,18 @@ async fn get_vsix() -> Result<(), Error> {
 
                     let percentage: f64 = (progress as f64 / total_size as f64) * 100.0;
 
+                    let elapsed = if start.elapsed().as_secs() <= 0 {
+                        1
+                    } else {
+                        start.elapsed().as_secs()
+                    } as usize;
+
+                    let download_speed = (progress - chunk.len()) / elapsed;
+
                     print!(
-                        "\x1B[2K\r{}% [{}{}] {}",
+                        "{}{}\r{}% [{}{}] {}",
+                        Ansi::CursorUp.to_string(),
+                        Ansi::ClearLine.to_string(),
                         percentage as usize,
                         {
                             let mut bar = "=".repeat(percentage as usize / 3);
@@ -220,6 +232,14 @@ async fn get_vsix() -> Result<(), Error> {
                         " ".repeat(100 / 3 - percentage as usize / 3),
                         progress_format,
                     );
+
+                    print!(
+                        "{}\r{}{}/s",
+                        Ansi::CursorDown.to_string(),
+                        Ansi::ClearLine.to_string(),
+                        format_size(download_speed)
+                    );
+
                     std::io::stdout().flush().map_err(Error::Flush)?;
                     file.write_all(&chunk).map_err(Error::FileWrite)?;
                 }

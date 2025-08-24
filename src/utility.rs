@@ -114,6 +114,12 @@ pub enum Error {
     Flush(#[source] std::io::Error),
 }
 
+pub enum Ansi {
+    ClearLine,
+    CursorUp,
+    CursorDown,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 #[allow(non_snake_case)]
 pub struct Publisher {
@@ -278,14 +284,14 @@ pub enum TargetPlatform {
     #[serde(rename = "darwin-arm64")]
     DarwinArm64,
 
-    #[serde(rename = "WEB")]
+    #[serde(rename = "web")]
     Web,
 
-    #[serde(rename = "UNIVERSAL")]
+    #[serde(rename = "universal")]
     Universal,
-    #[serde(rename = "UNKNOWN")]
+    #[serde(rename = "unknown")]
     Unknown,
-    #[serde(rename = "UNDEFINED")]
+    #[serde(rename = "undefined")]
     Undefined,
 }
 
@@ -303,6 +309,16 @@ impl FromStr for TargetPlatform {
             "darwin-x64" => Ok(TargetPlatform::DarwinX64),
             "darwin-arm64" => Ok(TargetPlatform::DarwinArm64),
             _ => Err(()),
+        }
+    }
+}
+
+impl std::fmt::Display for Ansi {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Ansi::ClearLine => write!(f, "\x1B[K"),
+            Ansi::CursorUp => write!(f, "\x1B[1A"),
+            Ansi::CursorDown => write!(f, "\x1B[1B"),
         }
     }
 }
